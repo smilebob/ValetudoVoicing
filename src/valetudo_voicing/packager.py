@@ -46,11 +46,20 @@ def compute_md5(file_path: Path) -> str:
     return h.hexdigest()
 
 
-def build_pkg(wav_dir: Path, output_pkg: Path, encrypt: bool = True) -> tuple[Path, str]:
-    """Package all .wav files in `wav_dir` into a Roborock S5 .pkg file.
+def build_pkg(
+    wav_dir: Path,
+    output_pkg: Path,
+    encrypt: bool = True,
+    audio_format: str = "wav",
+) -> tuple[Path, str]:
+    """Package all .wav files in `wav_dir` into a Roborock .pkg file (.wav or .ogg).
 
     Returns (output_pkg_path, md5_hex).
     """
+    fmt = audio_format.strip().lower()
+    if fmt not in ("wav", "ogg"):
+        raise ValueError(f"Unsupported audio format '{audio_format}'. Use 'wav' or 'ogg'.")
+
     wav_files = sorted(wav_dir.glob("*.wav"))
     if not wav_files:
         raise ValueError(f"No .wav files found in {wav_dir}")
@@ -58,15 +67,38 @@ def build_pkg(wav_dir: Path, output_pkg: Path, encrypt: bool = True) -> tuple[Pa
     output_pkg.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="valetudo_pkg_") as tmp_dir:
-        tar_path = Path(tmp_dir) / "voicepack.tar.gz"
-        existing_names = {w.name for w in wav_files}
+        tmp_path = Path(tmp_dir)
+        tar_path = tmp_path / "voicepack.tar.gz"
+        existing_names = {
+            (w.with_suffix(".ogg").name if fmt == "ogg" else w.name) for w in wav_files
+        }
+
+        ffmpeg = shutil.which("ffmpeg") if fmt == "ogg" else None
+        if fmt == "ogg" and not ffmpeg:
+            raise RuntimeError("ffmpeg is required to encode OGG Vorbis voicepacks.")
+
         with tarfile.open(tar_path, "w:gz") as tar:
             for wav in wav_files:
-                tar.add(wav, arcname=wav.name)
+                if fmt == "ogg":
+                    ogg_path = tmp_path / wav.with_suffix(".ogg").name
+                    subprocess.run(
+                        [ffmpeg, "-y", "-i", str(wav), "-c:a", "libvorbis", "-q:a", "4", str(ogg_path)],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    src_file = ogg_path
+                    arc_name = ogg_path.name
+                else:
+                    src_file = wav
+                    arc_name = wav.name
+
+                tar.add(src_file, arcname=arc_name)
                 for alias in SOUND_ALIASES.get(wav.name, ()):
-                    if alias not in existing_names:
-                        tar.add(wav, arcname=alias)
-                        existing_names.add(alias)
+                    alias_name = Path(alias).with_suffix(".ogg").name if fmt == "ogg" else alias
+                    if alias_name not in existing_names:
+                        tar.add(src_file, arcname=alias_name)
+                        existing_names.add(alias_name)
 
         if encrypt:
             ccrypt = shutil.which("ccrypt")

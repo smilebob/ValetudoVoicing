@@ -14,6 +14,7 @@ from valetudo_voicing.effects import VOICE_EFFECTS, apply_voice_effect
 from valetudo_voicing.i18n import get_ui_lang, set_ui_lang, tr
 from valetudo_voicing.jingles import JINGLES, apply_jingle
 from valetudo_voicing.packager import build_pkg, compute_md5
+from valetudo_voicing.robots import ROBOROCK_PROFILES, match_robot_model
 from valetudo_voicing.sounds import ROBOROCK_S5_SOUNDS, build_default_script, get_script_name, load_script, save_script
 from valetudo_voicing.tts import get_backend
 from valetudo_voicing.tui import AppState
@@ -33,9 +34,14 @@ def _create_dummy_wav(path: Path) -> None:
 def test_default_script_roundtrip(tmp_path: Path) -> None:
     script = build_default_script(lang="fr")
     assert script["robot"] == "roborock_s5"
-    assert len(script["sounds"]) == len(ROBOROCK_S5_SOUNDS)
     assert "start.wav" in script["sounds"]
     assert "error1.wav" in script["sounds"]
+    assert "water_tank_in.wav" not in script["sounds"]
+
+    s7_script = build_default_script(lang="en", robot="roborock_s7")
+    assert s7_script["robot"] == "roborock_s7"
+    assert "water_tank_in.wav" in s7_script["sounds"]
+    assert "empty_start.wav" in s7_script["sounds"]
 
     yaml_path = tmp_path / "voicepack.yaml"
     save_script(script, yaml_path)
@@ -294,3 +300,22 @@ def test_i18n_en_fr() -> None:
     runner = CliRunner()
     res = runner.invoke(app, ["--ui-lang", "en", "effects"])
     assert res.exit_code == 0
+
+
+def test_robots_and_ogg_packaging(tmp_path: Path) -> None:
+    assert len(ROBOROCK_PROFILES) >= 10
+    assert match_robot_model("Roborock S5 Max").id == "roborock_s5max"
+    assert match_robot_model("roborock.vacuum.a15").id == "roborock_s7"
+    assert match_robot_model("Q7 Max+").id == "roborock_q7max"
+
+    wav_dir = tmp_path / "wavs"
+    _create_dummy_wav(wav_dir / "start.wav")
+    out_ogg = tmp_path / "ogg_pack.pkg"
+    pkg_path, _ = build_pkg(wav_dir, out_ogg, encrypt=False, audio_format="ogg")
+    with tarfile.open(pkg_path, "r:gz") as tar:
+        assert sorted(tar.getnames()) == ["start.ogg", "start_clean.ogg"]
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["robots"])
+    assert res.exit_code == 0
+    assert "roborock_s7" in res.output

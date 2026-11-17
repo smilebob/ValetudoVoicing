@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any
 import yaml
 
+from .robots import get_robot_profile
+
 
 @dataclass(frozen=True)
 class SoundSpec:
-    """Definition of a single Roborock S5 sound entry."""
+    """Definition of a single Roborock sound entry."""
 
     filename: str
     category: str
@@ -16,6 +18,7 @@ class SoundSpec:
     default_fr: str
     default_en: str
     aliases: tuple[str, ...] = ()
+    features: tuple[str, ...] = ("base",)
 
 
 ROBOROCK_S5_SOUNDS: list[SoundSpec] = [
@@ -75,6 +78,19 @@ ROBOROCK_S5_SOUNDS: list[SoundSpec] = [
     SoundSpec("error12.wav", "error", "Erreur 12 : Batterie critique", "Erreur 12 : batterie très faible, veuillez me poser sur la station de charge.", "Error 12: Battery critically low."),
     SoundSpec("error13.wav", "error", "Erreur 13 : Problème de charge", "Erreur 13 : erreur de charge, nettoyez les contacts de la station.", "Error 13: Charging error. Please clean charging contacts."),
     SoundSpec("error_internal.wav", "error", "Erreur interne", "Erreur interne détectée, veuillez redémarrer le robot.", "Internal error detected. Please restart the robot."),
+
+    # --- Serpillière & Réservoir d'eau / Mop & Water Tank (S5 Max, S6, S7, Q7 Max) ---
+    SoundSpec("water_tank_in.wav", "maintenance", "Réservoir d'eau installé", "Réservoir d'eau installé.", "Water tank installed.", features=("mop",)),
+    SoundSpec("water_tank_out.wav", "maintenance", "Réservoir d'eau retiré", "Réservoir d'eau retiré.", "Water tank removed.", features=("mop",)),
+    SoundSpec("mop_in.wav", "maintenance", "Support de serpillière installé", "Support de serpillière installé.", "Mop bracket installed.", features=("mop",)),
+    SoundSpec("mop_out.wav", "maintenance", "Support de serpillière retiré", "Support de serpillière retiré.", "Mop bracket removed.", features=("mop",)),
+    SoundSpec("mop_start.wav", "cleaning", "Démarrage du lavage", "Démarrage du lavage.", "Starting mopping.", features=("mop",)),
+    SoundSpec("water_empty.wav", "maintenance", "Réservoir d'eau vide", "Réservoir d'eau vide, veuillez le remplir.", "Water tank empty. Please refill.", features=("mop",)),
+
+    # --- Station d'auto-vidage / Auto-Empty Dock (S7+, S7 Pro Ultra, Q7 Max+) ---
+    SoundSpec("empty_start.wav", "dock", "Vidage automatique en cours", "Vidage automatique du bac à poussière en cours.", "Emptying the dustbin.", features=("autodock",)),
+    SoundSpec("empty_done.wav", "dock", "Vidage automatique terminé", "Vidage automatique terminé.", "Dustbin emptying complete.", features=("autodock",)),
+    SoundSpec("empty_error.wav", "error", "Erreur de vidage automatique", "Erreur de vidage automatique, veuillez vérifier la station.", "Auto-empty error. Please check the dock.", features=("autodock",)),
 ]
 
 SOUND_ALIASES: dict[str, tuple[str, ...]] = {
@@ -82,10 +98,14 @@ SOUND_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def build_default_script(lang: str = "fr", name: str = "voicepack") -> dict[str, Any]:
-    """Create a default YAML-serializable voicepack script dictionary."""
+def build_default_script(lang: str = "fr", name: str = "voicepack", robot: str = "roborock_s5") -> dict[str, Any]:
+    """Create a default YAML-serializable voicepack script dictionary for a Roborock model."""
+    profile = get_robot_profile(robot)
+    allowed_features = set(profile.features)
     sounds_dict: dict[str, dict[str, Any]] = {}
     for spec in ROBOROCK_S5_SOUNDS:
+        if not any(f in allowed_features for f in spec.features):
+            continue
         text = spec.default_fr if lang.lower().startswith("fr") else spec.default_en
         sounds_dict[spec.filename] = {
             "category": spec.category,
@@ -96,7 +116,7 @@ def build_default_script(lang: str = "fr", name: str = "voicepack") -> dict[str,
     return {
         "version": 1,
         "name": name,
-        "robot": "roborock_s5",
+        "robot": profile.id,
         "language": lang,
         "sounds": sounds_dict,
     }

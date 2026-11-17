@@ -18,6 +18,7 @@ from .i18n import get_ui_lang, set_ui_lang, tr
 from .jingles import JINGLE_MAP, JINGLES, apply_jingle, generate_jingle_audio
 from .packager import build_pkg, compute_md5, normalize_wav_for_roborock
 from .recorder import play_wav, trim_and_normalize_recording
+from .robots import ROBOROCK_PROFILES, detect_robot_from_valetudo, get_robot_profile
 from .sounds import build_default_script, get_script_name, load_script, save_script
 from .tts import get_backend
 from .voices import delete_voice_profile, list_voice_profiles, load_voice_profile, save_voice_profile
@@ -33,6 +34,8 @@ class AppState:
     script_path: Optional[Path] = None
     script: Optional[dict[str, Any]] = None
     pack_name: str = "voicepack"
+    robot_id: str = "roborock_s5"
+    audio_format: str = "wav"
     voice_name: Optional[str] = None
     pkg_path: Optional[Path] = None
     pkg_md5: Optional[str] = None
@@ -54,6 +57,7 @@ class AppState:
                     self.script = load_script(candidate)
                     self.script_path = candidate
                     self.pack_name = get_script_name(self.script, candidate)
+                    self.robot_id = str(self.script.get("robot", self.robot_id))
                     self.lang = str(self.script.get("language", self.lang))
                     self.keep_wavs = Path("recordings") / self.pack_name
                     break
@@ -102,7 +106,7 @@ def _draw_header(stdscr: Any, state: AppState, subtitle: str) -> int:
     voice_info = state.voice_name or "Aucune"
     pkg_info = state.pkg_path.name if state.pkg_path else "Aucun"
 
-    status = f" Script: {script_info} | Voix: {voice_info} | Pack: {pkg_info} | Robot: {state.robot_ip}"
+    status = f" Script: {script_info} | Robot: {state.robot_id} | Voix: {voice_info} | Pack: {pkg_info}"
     _safe_addstr(stdscr, 1, 0, status, curses.color_pair(1))
     _safe_addstr(stdscr, 2, 0, "─" * max(1, max_x - 1), curses.A_DIM)
     return 3
@@ -310,6 +314,31 @@ def _pick_effect(stdscr: Any, state: AppState, preview_wav: Optional[Path] = Non
             return
         elif ch in (27, ord("q"), ord("Q")):
             return
+
+
+def _pick_robot(stdscr: Any, state: AppState) -> None:
+    items = [f"Auto-détecter via Valetudo ({state.robot_ip})"]
+    items.extend([f"{r.name:<34} [{', '.join(r.features)}]" for r in ROBOROCK_PROFILES])
+    cur_idx = next((i + 1 for i, r in enumerate(ROBOROCK_PROFILES) if r.id == state.robot_id), 1)
+    choice = _select_menu(stdscr, state, "Choisir le modèle Roborock", items, initial_idx=cur_idx)
+    if choice is None:
+        return
+    if choice == 0:
+        _draw_progress(stdscr, state, "Détection", f"Interrogation de Valetudo ({state.robot_ip})...")
+        try:
+            detected, raw_name = detect_robot_from_valetudo(state.robot_ip)
+            if detected:
+                state.robot_id = detected.id
+                state.audio_format = detected.audio_format
+                _show_message(stdscr, state, "Robot détecté", [f"{detected.name} ({raw_name})"])
+            else:
+                _show_message(stdscr, state, "Non reconnu", [f"Modèle renvoyé : {raw_name}"], is_error=True)
+        except Exception as exc:
+            _show_message(stdscr, state, "Erreur de détection", [str(exc)], is_error=True)
+    else:
+        prof = ROBOROCK_PROFILES[choice - 1]
+        state.robot_id = prof.id
+        state.audio_format = prof.audio_format
 
 
 def _pick_jingle(stdscr: Any, state: AppState) -> None:
@@ -575,6 +604,7 @@ def _screen_script(stdscr: Any, state: AppState) -> None:
         offset = 1 if has_active else 0
         if choice in (offset, offset + 1):
             lang = "fr" if choice == offset else "en"
+            _pick_robot(stdscr, state)
             pack_name = _prompt_text(stdscr, state, "Nouveau voicepack", "Nom du voicepack (servira à nommer le .pkg) :", "mon_voicepack")
             if not pack_name:
                 continue
@@ -586,7 +616,7 @@ def _screen_script(stdscr: Any, state: AppState) -> None:
             if target.exists() and not _confirm(stdscr, state, f"{target} existe déjà. L'écraser ?", default=False):
                 continue
             state.pack_name = clean_name
-            state.script = build_default_script(lang=lang, name=clean_name)
+            state.script = build_default_script(lang=lang, name=clean_name, robot=state.robot_id)
             state.script_path = target
             state.lang = lang
             state.keep_wavs = Path("recordings") / clean_name
@@ -694,7 +724,7 @@ def _screen_generate(stdscr: Any, state: AppState) -> None:
                     apply_jingle(norm_wav, state.jingle)
 
             _draw_progress(stdscr, state, "Empaquetage", f"Création de {out_path}...", total, total)
-            pkg_path, md5_hex = build_pkg(norm_dir, out_path, encrypt=state.encrypt)
+            pkg_path, md5_hex = build_pkg(norm_dir, out_path, encrypt=state.encrypt, audio_format=state.audio_format)
 
         state.pkg_path = pkg_path
         state.pkg_md5 = md5_hex
@@ -901,7 +931,7 @@ def _screen_record(stdscr: Any, state: AppState) -> None:
                         apply_jingle(sw, state.jingle)
 
             _draw_progress(stdscr, state, "Empaquetage", f"Création de {out_path}...")
-            pkg_path, md5_hex = build_pkg(staged_dir, out_path, encrypt=state.encrypt)
+            pkg_path, md5_hex = build_pkg(staged_dir, out_path, encrypt=state.encrypt, audio_format=state.audio_format)
             state.pkg_path = pkg_path
             state.pkg_md5 = md5_hex
             _show_message(
@@ -950,6 +980,7 @@ def _screen_apply_base(stdscr: Any, state: AppState) -> None:
             f"Effet vocal       : {fx_name}",
             f"Jingle d'intro    : {jg_name}",
             f"Fichier .pkg      : {out_path}",
+            f"Format audio      : {state.audio_format} (Entrée pour changer)",
             f"Chiffrement ccrypt: {'OUI' if state.encrypt else 'NON (.tar.gz)'}",
             f"🔊 Préécouter un extrait ({sample_wav.name}) avec cet effet",
             "▶ GÉNÉRER LE .PKG AVEC EFFET",
@@ -967,14 +998,16 @@ def _screen_apply_base(stdscr: Any, state: AppState) -> None:
             if val:
                 out_path = Path(val)
         elif choice == 4:
-            state.encrypt = not state.encrypt
+            state.audio_format = "ogg" if state.audio_format == "wav" else "wav"
         elif choice == 5:
+            state.encrypt = not state.encrypt
+        elif choice == 6:
             _draw_progress(stdscr, state, "Aperçu", f"Lecture de {sample_wav.name} (effet: {state.effect}, jingle: {state.jingle})...")
             try:
                 _preview_current_effect(state, state.effect, sample_wav=sample_wav)
             except Exception as exc:
                 _show_message(stdscr, state, "Erreur de pré-écoute", [str(exc)], is_error=True)
-        elif choice == 6:
+        elif choice == 7:
             break
     try:
         with tempfile.TemporaryDirectory(prefix="valetudo_tui_fx_") as tmp_dir:
@@ -987,7 +1020,7 @@ def _screen_apply_base(stdscr: Any, state: AppState) -> None:
                     apply_jingle(dst, state.jingle)
 
             _draw_progress(stdscr, state, "Empaquetage", f"Création de {out_path}...", len(wavs), len(wavs))
-            pkg_path, md5_hex = build_pkg(staged_dir, out_path, encrypt=state.encrypt)
+            pkg_path, md5_hex = build_pkg(staged_dir, out_path, encrypt=state.encrypt, audio_format=state.audio_format)
             state.pkg_path = pkg_path
             state.pkg_md5 = md5_hex
             _show_message(
@@ -1006,11 +1039,12 @@ def _screen_deploy(stdscr: Any, state: AppState) -> None:
         items = [
             f"Fichier .pkg  : {pkg_label}",
             f"IP du robot   : {state.robot_ip}",
+            f"Modèle        : {state.robot_id} (Entrée pour changer / auto-détecter)",
             f"Code langue   : {state.lang}",
             f"Port HTTP     : {state.port}",
-            "▶ ENVOYER SUR LE ROBOROCK S5 (VALETUDO)",
+            "▶ ENVOYER SUR LE ROBOROCK (VALETUDO)",
         ]
-        choice = _select_menu(stdscr, state, "6. Déployer sur le Roborock S5", items)
+        choice = _select_menu(stdscr, state, "7. Déployer sur le Roborock (Valetudo)", items)
         if choice is None:
             return
         if choice == 0:
@@ -1027,14 +1061,16 @@ def _screen_deploy(stdscr: Any, state: AppState) -> None:
             if val:
                 state.robot_ip = val
         elif choice == 2:
+            _pick_robot(stdscr, state)
+        elif choice == 3:
             val = _prompt_text(stdscr, state, "Langue Valetudo", "Code langue (fr, en...) :", state.lang)
             if val:
                 state.lang = val
-        elif choice == 3:
+        elif choice == 4:
             val = _prompt_text(stdscr, state, "Port HTTP local", "Port (ex: 8765) :", str(state.port))
             if val and val.isdigit():
                 state.port = int(val)
-        elif choice == 4:
+        elif choice == 5:
             if not state.pkg_path or not state.pkg_path.exists():
                 _show_message(stdscr, state, "Pack manquant", ["Sélectionnez ou générez d'abord un fichier .pkg."], is_error=True)
                 continue

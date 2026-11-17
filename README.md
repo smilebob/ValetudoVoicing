@@ -20,7 +20,7 @@
 - **Reusable Base Packs** — Keep your clean personal recordings in `./recordings/<pack_name>/` and generate unlimited `.pkg` variants with different effects & jingles in seconds — no re-recording needed.
 - **23 Fun Voice Effects + 6 Synthetic Jingles** — Real-time preview before packaging (`preview-effect` or `p` in TUI).
 - **Full-Screen `ncurses` TUI + Scriptable CLI** — Complete end-to-end workflow in a keyboard-driven terminal UI (`valetudo-voicing tui`) or modular CLI commands (`--ui-lang en|fr`).
-- **Complete Roborock S5 Compatibility** — Normalizes audio to 16 kHz mono 16-bit PCM WAV, expands firmware aliases (`start_clean.wav`, `stop_clean.wav`, `back_dock.wav`, `spot_clean.wav`, etc.), encrypts `.pkg` with `ccrypt` (`r0ckrobo#23456`), and deploys directly via Valetudo's `VoicePackManagementCapability` API.
+- **All Valetudo-Supported Roborock Models** — Dedicated profiles for **V1, S4, S4 Max, S5, S5 Max, S6 / S6 Pure, S6 MaxV, S7 / S7+, S7 MaxV / S7 Pro Ultra, and Q7 Max / Q7 Max+** (including mop/water-tank and auto-empty dock prompts), with **auto-detection via Valetudo API** (`/api/v2/robot`), WAV/OGG packaging (`--format wav|ogg`), firmware alias expansion (`start_clean.wav`, `stop_clean.wav`, `back_dock.wav`, `spot_clean.wav`, etc.), `ccrypt` `.pkg` encryption (`r0ckrobo#23456`), and direct LAN deployment.
 
 ---
 
@@ -79,8 +79,9 @@ The TUI walks you through all 7 steps:
 # 1. Learn a voice automatically by character name (or pass a YouTube URL)
 uv run valetudo-voicing learn --character "GLaDOS" --lang en --name glados --isolate-vocals
 
-# 2. Generate a customizable YAML script (English or French)
-uv run valetudo-voicing init my_pack.yaml --name my_glados --lang en --interactive
+# 2. Generate a customizable YAML script for your Roborock model (or auto-detect via --robot-ip)
+uv run valetudo-voicing robots
+uv run valetudo-voicing init my_pack.yaml --name my_glados --robot roborock_s7 --lang en --interactive
 
 # 3. Synthesize & package into my_glados.pkg (with optional effect & jingle)
 uv run valetudo-voicing generate my_pack.yaml --voice glados --effect glados --jingle portal

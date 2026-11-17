@@ -18,6 +18,7 @@ from .i18n import get_ui_lang, set_ui_lang, tr
 from .jingles import JINGLE_MAP, JINGLES, apply_jingle
 from .packager import build_pkg, normalize_wav_for_roborock
 from .recorder import play_wav, record_until_enter, trim_and_normalize_recording
+from .robots import ROBOROCK_PROFILES, detect_robot_from_valetudo, get_robot_profile
 from .sounds import build_default_script, get_script_name, load_script, save_script
 from .tts import get_backend
 from .tui import run_tui
@@ -238,23 +239,37 @@ def delete_voice(
 def init(
     output: Path = typer.Argument(Path("voicepack.yaml"), help="Chemin du fichier YAML à créer."),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Nom du voicepack (utilisé pour nommer le .pkg)."),
+    robot: str = typer.Option("roborock_s5", "--robot", "-R", help="Modèle Roborock (ex: roborock_s5, roborock_s5max, roborock_s7, roborock_q7max...)."),
+    robot_ip: Optional[str] = typer.Option(None, "--robot-ip", help="IP Valetudo pour détecter automatiquement le modèle du robot."),
     lang: str = typer.Option("fr", "--lang", "-l", help="Langue des textes par défaut (fr ou en)."),
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Saisir/modifier les textes un par un dans le terminal."
     ),
 ) -> None:
-    """Générer un fichier script YAML pré-rempli avec tous les sons du Roborock S5."""
+    """Générer un fichier script YAML pré-rempli pour le modèle Roborock choisi."""
     if output.exists() and not Confirm.ask(f"Le fichier {output} existe déjà. L'écraser ?"):
         raise typer.Abort()
 
+    target_robot = robot
+    if robot_ip:
+        try:
+            detected, raw_name = detect_robot_from_valetudo(robot_ip)
+            if detected:
+                target_robot = detected.id
+                console.print(f"[cyan]Modèle détecté via Valetudo : {detected.name} ({raw_name})[/cyan]")
+            else:
+                console.print(f"[yellow]Modèle '{raw_name}' non reconnu, utilisation de '{target_robot}'.[/yellow]")
+        except Exception as exc:
+            console.print(f"[yellow]Détection Valetudo impossible ({exc}), utilisation de '{target_robot}'.[/yellow]")
+
+    get_robot_profile(target_robot)
     pack_name = name or (output.stem.split(".")[0] or "voicepack")
-    script = build_default_script(lang=lang, name=pack_name)
+    script = build_default_script(lang=lang, name=pack_name, robot=target_robot)
     if interactive:
         script = _interactive_edit_script(script)
 
     save_script(script, output)
-    console.print(f"[bold green]✓ Script voicepack '{pack_name}' créé : {output}[/bold green]")
-    console.print("  Vous pouvez l'éditer librement ou lancer `valetudo-voicing edit` / `valetudo-voicing generate`.")
+    console.print(f"[bold green]✓ Script voicepack '{pack_name}' ({target_robot}, {len(script['sounds'])} sons) créé : {output}[/bold green]")
 
 
 @app.command()
@@ -282,6 +297,7 @@ def generate(
     jingle: str = typer.Option("none", "--jingle", "-j", help="Jingle d'intro (startrek, r2d2, gong, chime, portal)."),
     only: Optional[str] = typer.Option(None, "--only", help="Régénérer uniquement ce son (ex: start.wav)."),
     keep_wavs: Optional[Path] = typer.Option(None, "--keep-wavs", help="Dossier où conserver les .wav générés."),
+    audio_format: str = typer.Option("wav", "--format", "-f", help="Format audio dans le .pkg : wav (défaut) ou ogg."),
     no_encrypt: bool = typer.Option(False, "--no-encrypt", help="Ne pas chiffrer avec ccrypt (produit un .tar.gz)."),
 ) -> None:
     """Synthétiser tous les sons (ou un seul via --only) et empaqueter le voicepack .pkg."""
@@ -346,7 +362,7 @@ def generate(
                 progress.advance(task)
 
         with console.status("[bold cyan]Empaquetage du voicepack..."):
-            pkg_path, md5_hex = build_pkg(norm_dir, target_out, encrypt=not no_encrypt)
+            pkg_path, md5_hex = build_pkg(norm_dir, target_out, encrypt=not no_encrypt, audio_format=audio_format)
 
     console.print(f"\n[bold green]✓ Voicepack généré avec succès : {pkg_path}[/bold green]")
     console.print(f"  Sons traités : {len(enabled_items)} | Langue : {target_lang} | Moteur : {tts.name}")
@@ -367,6 +383,7 @@ def record(
     device: str = typer.Option("default", "--device", "-d", help="Périphérique ALSA d'enregistrement (ex: default, hw:0,0)."),
     effect: str = typer.Option("none", "--effect", "-E", help="Effet vocal amusant à appliquer (ex: vador, c3po, r2d2, kylo...)."),
     jingle: str = typer.Option("none", "--jingle", "-j", help="Jingle d'intro (startrek, r2d2, gong, chime, portal)."),
+    audio_format: str = typer.Option("wav", "--format", "-f", help="Format audio dans le .pkg : wav (défaut) ou ogg."),
     no_encrypt: bool = typer.Option(False, "--no-encrypt", help="Ne pas chiffrer avec ccrypt (produit un .tar.gz)."),
 ) -> None:
     """Dicter interactivement chaque phrase au microphone avec votre propre voix et générer le .pkg."""
@@ -499,7 +516,7 @@ def record(
                     apply_voice_effect(bw, effect, output_wav=sw)
                     if jingle.strip().lower() != "none":
                         apply_jingle(sw, jingle)
-            pkg_path, md5_hex = build_pkg(staged_dir, target_out, encrypt=not no_encrypt)
+            pkg_path, md5_hex = build_pkg(staged_dir, target_out, encrypt=not no_encrypt, audio_format=audio_format)
 
     console.print(f"[bold green]✓ Voicepack personnel généré : {pkg_path}[/bold green]")
     console.print(f"  Pack de base propre conservé dans : {norm_dir}")
@@ -513,6 +530,7 @@ def apply_effect_cmd(
     effect: str = typer.Option("none", "--effect", "-E", help="Effet vocal à appliquer (ex: vador, c3po, r2d2, kylo...)."),
     jingle: str = typer.Option("none", "--jingle", "-j", help="Jingle d'intro (startrek, r2d2, gong, chime, portal)."),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Chemin du .pkg de sortie (défaut: <nom>_<effet>.pkg)."),
+    audio_format: str = typer.Option("wav", "--format", "-f", help="Format audio dans le .pkg : wav (défaut) ou ogg."),
     no_encrypt: bool = typer.Option(False, "--no-encrypt", help="Ne pas chiffrer avec ccrypt (produit un .tar.gz)."),
 ) -> None:
     """Créer un nouveau .pkg avec effet/jingle à partir d'un pack d'enregistrement personnel existant."""
@@ -557,7 +575,7 @@ def apply_effect_cmd(
                 progress.advance(task)
 
         with console.status("[bold cyan]Empaquetage du voicepack..."):
-            pkg_path, md5_hex = build_pkg(staged_dir, target_out, encrypt=not no_encrypt)
+            pkg_path, md5_hex = build_pkg(staged_dir, target_out, encrypt=not no_encrypt, audio_format=audio_format)
 
     console.print(f"[bold green]✓ Nouveau voicepack généré : {pkg_path}[/bold green]")
     console.print(f"  Base utilisée : {src_path} ({len(wavs)} sons) | Effet : {effect} | Jingle : {jingle}")
@@ -567,11 +585,17 @@ def apply_effect_cmd(
 @app.command()
 def deploy(
     pkg_path: Path = typer.Argument(..., help="Fichier .pkg à envoyer au robot."),
-    robot_ip: str = typer.Option(..., "--robot-ip", "-r", help="Adresse IP locale du Roborock S5 sous Valetudo."),
+    robot_ip: str = typer.Option(..., "--robot-ip", "-r", help="Adresse IP locale du Roborock sous Valetudo."),
     lang: str = typer.Option("fr", "--lang", "-l", help="Code langue transmis à Valetudo (ex: fr, en)."),
     port: int = typer.Option(8765, "--port", "-p", help="Port HTTP temporaire local."),
 ) -> None:
     """Déployer directement un voicepack .pkg sur le robot via l'API Valetudo."""
+    try:
+        detected, raw_name = detect_robot_from_valetudo(robot_ip, timeout=3.0)
+        if detected:
+            console.print(f"[cyan]Robot détecté : {detected.name} ({raw_name})[/cyan]")
+    except Exception:
+        pass
     with console.status(f"[bold cyan]Envoi de {pkg_path.name} vers Valetudo ({robot_ip})..."):
         result = deploy_to_valetudo(pkg_path=pkg_path, robot_ip=robot_ip, language=lang, port=port)
 
@@ -581,6 +605,19 @@ def deploy(
         console.print(f"[yellow]⚠ Requête envoyée à Valetudo, mais le téléchargement n'a pas été confirmé dans le délai imparti.[/yellow]")
     console.print(f"  URL servie : {result['url']}")
     console.print(f"  MD5 : {result['md5']}")
+
+
+@app.command()
+def robots() -> None:
+    """Lister tous les modèles d'aspirateurs Roborock supportés sous Valetudo."""
+    table = Table(title="Modèles Roborock supportés (--robot)")
+    table.add_column("ID (--robot)", style="bold cyan")
+    table.add_column("Modèle", style="magenta")
+    table.add_column("Fonctionnalités")
+    table.add_column("Format")
+    for r in ROBOROCK_PROFILES:
+        table.add_row(r.id, r.name, ", ".join(r.features), r.audio_format)
+    console.print(table)
 
 
 @app.command()
