@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import numpy as np
+from scipy.signal import butter, sosfilt
 import soundfile as sf
 
 
@@ -62,7 +63,6 @@ _FFMPEG_FILTERS: dict[str, str] = {
     "yoda": "asetrate=16000*1.22,aresample=16000,atempo=0.82,aphaser=in_gain=0.4:out_gain=0.74:delay=3.0:decay=0.4:speed=0.5,highpass=f=350",
     "minion": "asetrate=16000*1.55,aresample=16000,atempo=0.72,vibrato=f=6:d=0.35",
     "alien": "flanger=delay=8:depth=6:regen=65:width=90:speed=4,aphaser=type=t:speed=1.5,aecho=0.8:0.85:35:0.4",
-    "daftpunk": "chorus=0.7:0.9:20|35|50:0.5|0.4|0.3:0.25|0.3|0.35:2|1.8|1.5,flanger=delay=3:depth=2:regen=40:speed=1.2,highpass=f=180",
     "vintage": "highpass=f=600,lowpass=f=2100,acrusher=bits=7:mode=log,aecho=0.8:0.7:10:0.2",
     "underwater": "lowpass=f=550,vibrato=f=3.5:d=0.65,aecho=0.8:0.85:40:0.45",
     "whisper": "highpass=f=1200,chorus=0.5:0.9:25:0.4:0.25:2,aecho=0.8:0.85:50:0.35",
@@ -77,6 +77,46 @@ def _apply_dalek(audio: np.ndarray, sr: int) -> np.ndarray:
     modulated = audio * carrier
     driven = np.tanh(modulated * 3.0) * 0.85
     return driven.astype(np.float32)
+
+
+def _apply_vocoder(audio: np.ndarray, sr: int) -> np.ndarray:
+    """16-band channel vocoder with sawtooth chord carrier (classic Daft Punk effect)."""
+    if len(audio) == 0:
+        return audio
+
+    t = np.arange(len(audio), dtype=np.float32) / float(sr)
+    # Rich sawtooth chord carrier (C3 + G3 + C4 + E4)
+    carrier = np.zeros_like(audio, dtype=np.float32)
+    for freq in (130.81, 196.00, 261.63, 329.63):
+        phase = (t * freq) % 1.0
+        carrier += (2.0 * phase - 1.0)
+    carrier /= 4.0
+
+    nyq = 0.5 * sr
+    edges = np.geomspace(180.0, min(6800.0, nyq * 0.9), 17)
+    env_sos = butter(2, min(40.0 / nyq, 0.9), btype="low", output="sos")
+
+    vocoded = np.zeros_like(audio, dtype=np.float32)
+    for i in range(16):
+        lo = edges[i] / nyq
+        hi = min(edges[i + 1] / nyq, 0.98)
+        if lo >= hi:
+            continue
+        bp_sos = butter(2, [lo, hi], btype="band", output="sos")
+        mod_band = sosfilt(bp_sos, audio)
+        car_band = sosfilt(bp_sos, carrier)
+        env = np.maximum(0.0, sosfilt(env_sos, np.abs(mod_band)))
+        vocoded += car_band * env * 6.0
+
+    # Add subtle high-passed consonants (> 2.5 kHz) for crisp speech intelligibility
+    hp_sos = butter(2, min(2500.0 / nyq, 0.9), btype="high", output="sos")
+    consonants = sosfilt(hp_sos, audio) * 0.22
+    out = vocoded * 0.88 + consonants
+
+    peak = float(np.max(np.abs(out)))
+    if peak > 1e-6:
+        out = out / max(peak, 1.0) * 0.9
+    return out.astype(np.float32)
 
 
 def _apply_r2d2(audio: np.ndarray, sr: int) -> np.ndarray:
@@ -148,11 +188,16 @@ def apply_voice_effect(wav_path: Path, effect_id: str, output_wav: Path | None =
     with tempfile.TemporaryDirectory(prefix="valetudo_fx_") as tmp_dir:
         tmp_out = Path(tmp_dir) / "fx.wav"
 
-        if norm_id in ("dalek", "r2d2"):
+        if norm_id in ("dalek", "r2d2", "daftpunk"):
             audio, sr = sf.read(str(wav_path), dtype="float32")
             if audio.ndim > 1:
                 audio = np.mean(audio, axis=1)
-            processed = _apply_dalek(audio, sr) if norm_id == "dalek" else _apply_r2d2(audio, sr)
+            if norm_id == "dalek":
+                processed = _apply_dalek(audio, sr)
+            elif norm_id == "r2d2":
+                processed = _apply_r2d2(audio, sr)
+            else:
+                processed = _apply_vocoder(audio, sr)
             raw_fx = Path(tmp_dir) / "raw_fx.wav"
             sf.write(str(raw_fx), processed, sr, subtype="PCM_16")
             subprocess.run(
